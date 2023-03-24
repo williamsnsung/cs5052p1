@@ -4,10 +4,14 @@ from pyspark.sql.functions import *
 import plotly.express as px
 from sparkcmds import *
 
+# Path to csv file, change as appropriate
 dataPath = "./data/Absence_3term201819_nat_reg_la_sch.csv"
+# creating the spark session
 spark = SparkSession.builder.master("local").appName("p1").config("conf-key", "conf-value").getOrCreate()
+# reading in the data from the csv, updating the time period column to be more human readable by adding a slash between the years
 data = spark.read.format("csv").option("header", "true").load(dataPath).withColumn("time_period", regexp_replace("time_period", "(..$)", "/$1"))
 
+# initialising list of features in each part
 pupEn = "Pupil Enrolements"
 schAuth = "Authorised Medical Absences"
 unauth = "Unauthorised Absences"
@@ -23,58 +27,63 @@ anal = "Absence-Location-School Analysis"
 
 advF = (anal, "")
 
+# preprocessing to optimise queries later on
 laList = flatten(getLas(data).collect())
 timePer = flatten(getYears(data).collect())
 schType = flatten(getSchls(data).collect())
 
+# widget on a sidebar which allows a user to choose which feature group to select from
 fGroup = st.sidebar.selectbox(
     'Select a Feature Group',
     ("Core Features", "Intermediate Features", "Advanced Features")
 )
-
+# dictionary of features used for user selection
 features = {"Core Features":coreF, "Intermediate Features":intF, "Advanced Features":advF}
 
+# widget on a sidebar which allows a user to choose a feature form the selected feature group
 feature = st.sidebar.selectbox(
     'Select a Feature to View',
     features[fGroup]
 )
 
+# if statement to determine what query should be executed based on the selected feature
 if feature == pupEn:
     st.write("Pupil Enrolements in Local Authorities")
-    laNames = st.multiselect('Select Your Local Authorities', laList)
+    laNames = st.multiselect('Select Your Local Authorities', laList) # allows a user to select multiple local authorities
     for laName in laNames:
         res = getLaEnrlmnts(data, laName)
         st.write(f"Pupil Enrolements in {laName}")
-        st.dataframe(res, use_container_width=True)
+        st.dataframe(res, use_container_width=True) # outputs the found dataframe
 
 elif feature == schAuth:
     st.write("Authorised Medical Absences Between 2017-2018")
-    sch = st.selectbox('Select a School Type', schType)
+    sch = st.selectbox('Select a School Type', schType) # allows a user to select a schol type
     res = getSchlMedAbs(data, sch)
     st.write(f"The total number of pupils who were given authorised absences because of medical appointments or illness in the time period 2017-2018 at \
-        {sch} schools was {int(res.collect()[0][0]):,}")
+        {sch} schools was {int(res.collect()[0].asDict()['total']):,}")
 
 elif feature == unauth:
     st.write("Unauthorised absences broken down by either region name or local authority name.")
-    per = st.select_slider('Select a Time Period', options=timePer)
-    opt = st.select_slider('Select How to Break Down The Data', ("Local authority", "Regional"))
+    per = st.select_slider('Select a Time Period', options=timePer) # allows a user to use a slider to select a time period
+    opt = st.select_slider('Select How to Break Down The Data', ("Local authority", "Regional")) # slider to select how to break down the data
     res = getUnauthAbs(data, per, opt)
-    st.dataframe(res, height=None, use_container_width=True)
+    st.dataframe(res, height=None, use_container_width=True) # outputs the result into a dataframe
 
 elif feature == auth:
     st.write("Top 3 Reasons for authorised absences in each year")
     res = getTop3Auth(data)
-    st.dataframe(spark.createDataFrame(data = res, schema=["time_period", "1st", "2nd", "3rd"]))
+    st.dataframe(spark.createDataFrame(data = res, schema=["time_period", "1st", "2nd", "3rd"])) # outputs the result into a dataframe
 
 elif feature == cmpAuth:
     st.write("Comparison of Two Local Authorities in a Given year")
 
-    per = st.select_slider('Select a Time Period', options=timePer)
+    per = st.select_slider('Select a Time Period', options=timePer) # allows a user to use a slider to select a time period
 
-    la1 = st.selectbox('Select Your First Local Authority',(laList))
+    la1 = st.selectbox('Select Your First Local Authority',(laList)) # allows a user to select a local authority
     la2 = st.selectbox('Select Your Second Local Authority',(laList))
-    la = [la1, la2]
+    la = [la1, la2] # stores the selected local authorities
 
+    # creating lists of features to compare along with the associated dictionaries from which an aggregate sum should be found
     enrlCmp = ["enrolments", "enrolments_pa_10_exact"]
     enrlCmpDict = dict((i, "sum") for i in enrlCmp)
     enrlCmp.insert(0,"la_name")
@@ -95,6 +104,7 @@ elif feature == cmpAuth:
     unauthCmpDict = dict((i, "sum") for i in unauthCmp)
     unauthCmp.insert(0,"la_name")
 
+    # dictionary to store the results after passing the relevant data to the getCmpData function below
     res = {"enrl":[], "schl":[], "auth":[], "sess":[], "unauth":[]}
 
     for i in range(2):
@@ -109,6 +119,7 @@ elif feature == cmpAuth:
         res["sess"].append(sess)
         res["unauth"].append(unauth)
     
+    # convert enrolements into a table so that the percentages of peristent absentees can be calculated based on the number of enrolments
     enrl = res["enrl"][0].union(res["enrl"][1])
     enrl = getPercentages(enrl, "enrolments_pa_10_exact", "enrolments")
     enrl = enrl.collect()
@@ -116,8 +127,8 @@ elif feature == cmpAuth:
         enrl[i] = enrl[i].asDict()
 
     st.write("Enrolements")
-    col1, col2 = st.columns(2)
-    col1.metric(enrl[0]["la_name"], f"{int(enrl[0]['enrolments']):,}")
+    col1, col2 = st.columns(2) # creates two columns to display data in
+    col1.metric(enrl[0]["la_name"], f"{int(enrl[0]['enrolments']):,}") # creates a metric object which allows for pretty displaying of numbers
     col2.metric(enrl[1]["la_name"], f"{int(enrl[1]['enrolments']):,}")
     st.write("Percentage of Persistent Absentees")
     col1, col2 = st.columns(2)
@@ -127,8 +138,10 @@ elif feature == cmpAuth:
     schl1 = res["schl"][0]
     schl2 = res["schl"][1]
     st.write("School Type Distribution")
+    # the below creates pie charts for easy viewing experience
     fig1 = px.pie([row.asDict() for row in schl1.collect()], values='num_schools', names='school_type', title=la[0])
     fig2 = px.pie([row.asDict() for row in schl2.collect()], values='num_schools', names='school_type', title=la[1])
+    # plots the figures given
     col3 = st.plotly_chart(fig1, theme=None, use_container_width=True)
     col4 = st.plotly_chart(fig2, theme=None, use_container_width=True)
 
@@ -141,11 +154,14 @@ elif feature == cmpAuth:
     col1.metric(sessTable[0]["la_name"], f"{int(sessTable[0]['sess_possible']):,}")
     col2.metric(sessTable[1]["la_name"], f"{int(sessTable[1]['sess_possible']):,}")
     
-    st.write("Percentage of Authorised vs Unauthorised Sessions")
-    sess = sess.withColumn("sess_normal", sess["sess_possible"] - sess["sess_overall"] - sess["sess_overall_pa_10_exact"])
+    st.write("Percentage of Normal Sessions vs Absence Sessions")
+    sess = sess.withColumn("sess_normal", sess["sess_possible"] - sess["sess_overall"])
+    sess = sess.withColumn("sess_overall_exc_pa", sess["sess_overall"] - sess["sess_overall_pa_10_exact"])
     sess = getPercentages(sess, "sess_normal", "sess_possible")
-    sess = getPercentages(sess, "sess_overall", "sess_possible")
+    sess = getPercentages(sess, "sess_overall_exc_pa", "sess_possible")
     sess = getPercentages(sess, "sess_overall_pa_10_exact", "sess_possible")
+    sess = getPercentageTable(sess)
+    # the below creates a bar chart for displaying data 
     fig1 = px.bar([row.asDict() for row in sess.collect()], x="la_name", y=[col for col in sess.schema.names if col[-8:] == "_percent"])
     st.plotly_chart(fig1, theme=None, use_container_width=True)
 
@@ -169,7 +185,6 @@ elif feature == cmpAuth:
 
 elif feature == perfReg:
     st.write("Performance of Regions in England from 2006-2018")
-    res = getAttendance200618(data)
 
     fig1, fig2, rankings = getAnalysis(data)
     st.write("Absence Rate Line Chart")
@@ -184,12 +199,13 @@ elif feature == anal:
     st.write("Absence-Location-School Analysis")
     per = st.select_slider('Select a Time Period', options=timePer)
     res = getAbsLocSchl(data, per)
-    labels = dict(schls="school_type", locs="region_name", color="sess_authorised_percent")
+    labels = dict(schls="school_type", locs="region_name", color="sess_overall_percent")
     locs = flatten(res.select("region_name").distinct().collect())
     res = res.collect()
     for i in range(len(res)):
         res[i] = res[i].asDict()
 
+    # create an intermiedary matrix to translate the data into the correct format for the heat map
     intMatrix = dict(zip(schType, [dict() for i in range(len(schType))]))
     for schl in intMatrix:
         intMatrix[schl] = dict(zip(locs, [0 for i in range(len(locs))]))
@@ -197,10 +213,11 @@ elif feature == anal:
     for i in range(len(res)):
         schl = res[i]["school_type"]
         loc = res[i]["region_name"]
-        val = res[i]["sess_authorised_percent"]
+        val = res[i]["sess_overall_percent"]
         intMatrix[schl][loc] = val
 
-    matrix = [[0] * len(locs) for i in range(len(schType))]
+    # convert the intermediary matrix into a normal 2d array for input into the heat map
+    matrix = [[0] * len(locs) for i in range(len(schType))] 
     i = 0
     for schl in intMatrix:
         j = 0
@@ -208,5 +225,7 @@ elif feature == anal:
             matrix[i][j] = intMatrix[schl][loc]
             j += 1
         i += 1
-    fig = px.imshow(matrix, labels = labels, x = locs, y = schType)
+    
+    # create a heat map
+    fig = px.imshow(matrix, labels = labels, x = locs, y = schType, zmin=3, zmax=13)
     st.plotly_chart(fig, theme=None, use_container_width=True)
